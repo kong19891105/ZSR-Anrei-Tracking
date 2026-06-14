@@ -256,6 +256,7 @@ textarea.ctrl:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(32,84,224
   </nav>
   <div class="bar-right">
     <button class="icon-btn" id="btn-me" title="切换身份 / 可见范围">👤 选择身份</button>
+    <button class="icon-btn" id="btn-chpw" title="修改当前身份密码" style="display:none">🔒 修改密码</button>
     <button class="icon-btn" id="btn-help" title="使用说明">📖 说明</button>
     <span class="sync-badge" id="sync-badge">本地模式</span>
     <button class="icon-btn" id="btn-refresh" title="刷新">🔄 刷新</button>
@@ -500,6 +501,16 @@ function scopeLabel(){
   if (S.me.role === "rep")     return "代表:" + S.me.rep;
   return "";
 }
+function getMeKey(){
+  if (!S.me) return "";
+  const r = S.me.role;
+  if (r === "admin") return "admin:admin";
+  if (r === "viewer") return "viewer:viewer";
+  if (r === "region") return "region:" + S.me.region;
+  if (r === "manager") return "manager:" + S.me.manager;
+  if (r === "rep") return "rep:" + S.me.rep;
+  return "";
+}
 function scopedRows(){ return buildRows().filter(inScope); }
 
 /* =================== 维度定义(看板) =================== */
@@ -525,6 +536,9 @@ function renderCtx(){
     '<div class="ctx-kpi"><small>已填写</small><b>' + filled + '</b></div>' +
     '<div class="ctx-kpi"><small>已入院/在用</small><b>' + entered + '</b></div>';
   renderWatermark();
+  // 非管理员显示"修改密码"按钮
+  const btnChpw = $("#btn-chpw");
+  if (btnChpw) btnChpw.style.display = (S.me && S.me.role !== "admin") ? "" : "none";
 }
 function renderWatermark(){
   const wm = $("#watermark"); if (!wm) return;
@@ -634,7 +648,7 @@ function renderFill(){
   }
   h += '</tr></thead><tbody>';
   if (!rows.length) h += '<tr><td class="l" colspan="'+cols.length+'" style="text-align:center;color:var(--mute);padding:18px">没有符合条件的记录</td></tr>';
-  else for (const r of rows){ h += '<tr>'; for (const c of cols) h += c.td(r); h += '</tr>'; }
+  else for (const r of rows){ h += '<tr data-key="'+esc(r.key)+'">'; for (const c of cols) h += c.td(r); h += '</tr>'; }
   h += '</tbody></table></div></div>';
 
   // 保存滚动位置，避免重渲染后跳回顶部
@@ -693,6 +707,20 @@ async function updateFill(key, fld, val){
   await saveFill();
 }
 
+// 大数据量下避免全量重渲染：只更新当前行的进度/对比列
+function refreshRowStepVisual(key, cols){
+  const row = document.querySelector('tr[data-key="'+esc(key)+'"]');
+  if (!row) return;
+  const r = buildRows().find(x => x.key === key);
+  if (!r) return;
+  const tds = row.querySelectorAll('td');
+  for (let i = 0; i < cols.length && i < tds.length; i++){
+    if (cols[i].id === 'pct' || cols[i].id === 'cmp'){
+      tds[i].outerHTML = cols[i].td(r);
+    }
+  }
+}
+
 function bindFill(cols){
   const setF = (k,v)=>{ S.fFilter[k]=v; renderFill(); renderCtx(); };
   if ($("#f-region"))   $("#f-region").onchange   = e => setF("region", e.target.value);
@@ -712,11 +740,14 @@ function bindFill(cols){
     colVisPanel.onclick = async e => { e.stopPropagation(); const cb = e.target.closest('input[type=checkbox]'); if(!cb) return; S.fillColVis[cb.dataset.cvid] = cb.checked; await Store.set("zsr-colvis", S.fillColVis); renderFill(); };
   }
 
-  // 下拉(step / equip)即时保存并重算该行展示
+  // 下拉(step / equip)即时保存，step 变更时局部更新当前行进度/对比，避免全量重渲染
   $$('#fill-tbl select[data-fld]').forEach(selEl => {
     selEl.onchange = async () => {
       await updateFill(selEl.dataset.k, selEl.dataset.fld, selEl.value);
-      renderFill(); renderCtx();
+      if (selEl.dataset.fld === 'step') {
+        refreshRowStepVisual(selEl.dataset.k, cols);
+      }
+      renderCtx(); // 仅更新顶部 KPI，不重新渲染整张表格
     };
   });
   // 文本(blocker / note)防抖保存(不重渲染,避免打断输入)
@@ -994,6 +1025,7 @@ function renderAdmin(){
   distinct(S.base, r=>r.rep).forEach(n=>addUser("rep", n, "代表"));
   distinct(S.base, r=>r.manager).forEach(n=>addUser("manager", n, "经理"));
   distinct(S.base, r=>r.region).forEach(n=>addUser("region", n, "大区"));
+  users.push({role:"viewer", name:"查看者", label:"查看者", key:"viewer:viewer"});
   users.push({role:"admin", name:"管理员", label:"管理员", key:"admin:admin"});
   users.sort((a,b)=>a.label.localeCompare(b.label,"zh")||a.name.localeCompare(b.name,"zh"));
   h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
@@ -1050,6 +1082,7 @@ function bindAdmin(){
     distinct(S.base, r=>r.rep).forEach(n=>users.push("rep:"+n));
     distinct(S.base, r=>r.manager).forEach(n=>users.push("manager:"+n));
     distinct(S.base, r=>r.region).forEach(n=>users.push("region:"+n));
+    users.push("viewer:viewer");
     users.push("admin:admin");
     for (const k of users) S.passwords[k] = "123456";
     await savePasswords(); toast("已设置所有默认密码"); renderAdmin();
@@ -1061,7 +1094,8 @@ function bindAdmin(){
   };
   $$('button[data-savepw]').forEach(b => b.onclick = async () => {
     const key = b.dataset.savepw;
-    const inp = $('#a-pw-'+key); if(!inp) return;
+    // key 包含冒号，不能用 querySelector 的 #id，改用 getElementById
+    const inp = document.getElementById('a-pw-'+key); if(!inp) return;
     const pw = inp.value.trim();
     if(!pw){ toast("请输入密码"); return; }
     S.passwords[key] = pw;
@@ -1206,7 +1240,7 @@ function exportFillXlsx(){
   XLSX.writeFile(wb, "鞘产品入院跟进_"+new Date().toISOString().slice(0,10)+".xlsx");
 }
 function exportPkg(){
-  const pkg = { app:"zsr-tracking", v:1, exportedAt:Date.now(), base:S.base, baseMeta:S.baseMeta, fill:S.fill, versions:S.versions };
+  const pkg = { app:"zsr-tracking", v:1, exportedAt:Date.now(), base:S.base, baseMeta:S.baseMeta, fill:S.fill, versions:S.versions, passwords:S.passwords };
   const blob = new Blob([JSON.stringify(pkg)], { type:"application/json" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "入院跟进数据包_"+new Date().toISOString().slice(0,10)+".json"; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
@@ -1215,8 +1249,8 @@ function importPkg(){
   const inp = document.createElement("input"); inp.type="file"; inp.accept=".json";
   inp.onchange = () => { const f = inp.files[0]; if(!f) return; const rd = new FileReader();
     rd.onload = async e => { try { const p = JSON.parse(e.target.result); if (!p.base){ toast("⚠ 数据包格式不正确"); return; }
-      S.base=p.base||[]; S.baseMeta=p.baseMeta||{importedAt:Date.now(),count:S.base.length}; S.fill=p.fill||{}; S.versions=p.versions||[];
-      await saveBase(); await saveFill(); await saveVersions(); toast("已导入数据包"); rerender();
+      S.base=p.base||[]; S.baseMeta=p.baseMeta||{importedAt:Date.now(),count:S.base.length}; S.fill=p.fill||{}; S.versions=p.versions||[]; S.passwords=p.passwords||{};
+      await saveBase(); await saveFill(); await saveVersions(); await savePasswords(); toast("已导入数据包"); rerender();
     } catch(err){ toast("⚠ 解析失败:"+err.message); } };
     rd.readAsText(f); };
   inp.click();
@@ -1286,6 +1320,32 @@ function openIdentity(){
     if (role==="viewer" && S.tab==="admin") switchTab("dash");
     if (role!=="admin" && S.tab==="admin") switchTab("fill");
     rerender();
+  };
+}
+
+function openChangePw(){
+  const meKey = getMeKey();
+  const hasPw = meKey && S.passwords[meKey] && S.passwords[meKey].trim();
+  let h = '<div class="modal-h"><b>🔒 修改密码</b></div><div class="modal-b">';
+  h += '<div class="lbl">当前身份</div><div class="hint" style="margin-bottom:10px">'+esc(scopeLabel())+'</div>';
+  if (hasPw){
+    h += '<div class="lbl">旧密码</div><input class="ctrl" id="chpw-old" type="password" placeholder="输入当前密码" style="width:100%;margin-bottom:10px">';
+  }
+  h += '<div class="lbl">新密码</div><input class="ctrl" id="chpw-new" type="password" placeholder="输入新密码" style="width:100%;margin-bottom:10px">';
+  h += '<div class="lbl">确认新密码</div><input class="ctrl" id="chpw-confirm" type="password" placeholder="再次输入新密码" style="width:100%">';
+  h += '</div><div class="modal-f"><button class="btn" id="chpw-cancel">取消</button><button class="btn pri" id="chpw-ok">确定</button></div>';
+  openModal(h);
+
+  $("#chpw-cancel").onclick = closeModal;
+  $("#chpw-ok").onclick = async () => {
+    const old = hasPw ? (($("#chpw-old").value || "").trim()) : "";
+    const np = ($("#chpw-new").value || "").trim();
+    const cp = ($("#chpw-confirm").value || "").trim();
+    if (hasPw && old !== S.passwords[meKey]){ toast("旧密码错误"); return; }
+    if (!np){ toast("请输入新密码"); return; }
+    if (np !== cp){ toast("两次输入的新密码不一致"); return; }
+    S.passwords[meKey] = np;
+    await savePasswords(); toast("密码已修改"); closeModal();
   };
 }
 function openHelp(){
@@ -1370,6 +1430,7 @@ async function boot(){
 
   $$(".tab").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
   $("#btn-me").onclick = openIdentity;
+  $("#btn-chpw").onclick = openChangePw;
   $("#btn-help").onclick = openHelp;
   $("#btn-refresh").onclick = () => location.reload();
   $("#mask").onclick = e => { if (e.target===$("#mask")) closeModal(); };
