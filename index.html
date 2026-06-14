@@ -1257,7 +1257,7 @@ function importPkg(){
 }
 
 /* =================== 身份选择 =================== */
-function openIdentity(){
+function openIdentity(force){
   const reps = distinct(S.base, DIMS.rep.f);
   const mgrs = distinct(S.base, DIMS.manager.f);
   const regions = distinct(S.base, DIMS.region.f);
@@ -1267,8 +1267,12 @@ function openIdentity(){
     [["admin","管理员"],["region","大区"],["manager","经理"],["rep","代表"],["viewer","查看者"]].map(([r,n])=>'<button data-r="'+r+'" class="'+((cur.role||"admin")===r?"on":"")+'">'+n+'</button>').join("") + '</div>';
   h += '<div id="id-name-box" style="margin-top:14px"></div>';
   h += '<div id="id-pw-box" style="margin-top:10px"></div>';
-  h += '</div><div class="modal-f"><button class="btn" id="id-cancel">取消</button><button class="btn pri" id="id-ok">确定</button></div>';
+  h += '</div><div class="modal-f"><button class="btn" id="id-cancel">'+(force?'必须选择身份':'取消')+'</button><button class="btn pri" id="id-ok">确定</button></div>';
   openModal(h);
+
+  if (force){
+    $("#mask").onclick = null; // 强制模式下阻止点击 mask 关闭
+  }
 
   let role = cur.role || "admin";
   let pick = { region:cur.region||"", manager:cur.manager||"", rep:cur.rep||"" };
@@ -1286,7 +1290,7 @@ function openIdentity(){
   };
   renderName();
   $("#id-role").onclick = e => { const b=e.target.closest("button"); if(b){ role=b.dataset.r; $$("#id-role button").forEach(x=>x.classList.toggle("on",x.dataset.r===role)); renderName(); } };
-  $("#id-cancel").onclick = closeModal;
+  $("#id-cancel").onclick = force ? () => { toast("请先选择身份并登录"); } : closeModal;
   // 密码验证
   let pwInput = null;
   const renderPwBox = () => {
@@ -1320,6 +1324,17 @@ function openIdentity(){
     if (role==="viewer" && S.tab==="admin") switchTab("dash");
     if (role!=="admin" && S.tab==="admin") switchTab("fill");
     rerender();
+    if (force){
+      // 强制登录完成后：恢复 mask 点击关闭、显示页面、初始化
+      $("#mask").onclick = e => { if (e.target===$("#mask")) closeModal(); };
+      $("main").style.display = "";
+      $("#ctxbar").style.display = "";
+      if (!isAdmin()){
+        const adminTab = document.querySelector('.tab[data-tab="admin"]');
+        if (adminTab) adminTab.style.display = "none";
+      }
+      switchTab("fill");
+    }
   };
 }
 
@@ -1420,23 +1435,29 @@ async function boot(){
   $("#sync-badge").textContent = Store.shared ? "共享模式" : (Store.ls ? "本地模式" : "临时模式");
   if (Store.shared) $("#sync-badge").classList.add("live");
   await loadAll();
-  if (!S.me){ S.me = { role:"admin" }; await Store.pset("zsr-me", S.me); }
+  // 不再自动设为管理员，必须选择身份
 
-  // 非管理员隐藏管理后台标签
-  if (!isAdmin()){
-    const adminTab = document.querySelector('.tab[data-tab="admin"]');
-    if (adminTab) adminTab.style.display = "none";
-  }
-
+  // 绑定事件
   $$(".tab").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
-  $("#btn-me").onclick = openIdentity;
+  $("#btn-me").onclick = () => openIdentity(false);
   $("#btn-chpw").onclick = openChangePw;
   $("#btn-help").onclick = openHelp;
   $("#btn-refresh").onclick = () => location.reload();
   $("#mask").onclick = e => { if (e.target===$("#mask")) closeModal(); };
   $("#file-xlsx").onchange = e => { const f=e.target.files[0]; if(f) handleXlsxFile(f); e.target.value=""; };
 
-  switchTab("fill");
+  if (!S.me) {
+    // 初次进入：强制身份选择，隐藏页面内容
+    $("main").style.display = "none";
+    $("#ctxbar").style.display = "none";
+    openIdentity(true);
+  } else {
+    if (!isAdmin()){
+      const adminTab = document.querySelector('.tab[data-tab="admin"]');
+      if (adminTab) adminTab.style.display = "none";
+    }
+    switchTab("fill");
+  }
 }
 boot();
 </script>
